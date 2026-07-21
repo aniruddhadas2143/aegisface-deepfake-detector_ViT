@@ -87,7 +87,6 @@ def init_detector():
         else:
             model.load_state_dict(checkpoint)
 
-    # Automatically resolve indices from mapping keys
     for k, v in class_mapping.items():
         if k.lower() in ["real", "authentic"]:
             real_idx = int(v)
@@ -138,8 +137,11 @@ with st.sidebar:
     st.caption(f"Operator: {st.session_state.username}")
     st.markdown("---")
     st.text(f"Device: {device.type.upper()}")
-    st.text(f"Class Map: {CLASS_MAP}")
     st.text(f"Resolved Real Index: {REAL_IDX}")
+    
+    st.markdown("### ⚙️ Calibration Controls")
+    invert_preds = st.checkbox("Invert Model Output (Fix False Reals)", value=False, help="Check this if deepfakes are incorrectly classified as real. This flips probability scores.")
+    
     st.markdown("---")
     if st.button("Logout"):
         st.session_state.authenticated = False
@@ -151,7 +153,7 @@ st.markdown("Upload a video (`.mp4`) or image (`.jpg`, `.png`) to perform enhanc
 
 uploaded_file = st.file_uploader("Drop Media File", type=["jpg", "png", "jpeg", "mp4"])
 
-def extract_and_predict_enhanced(pil_images):
+def extract_and_predict_enhanced(pil_images, invert_flag):
     tensors = []
     crops = []
 
@@ -183,6 +185,9 @@ def extract_and_predict_enhanced(pil_images):
     with torch.no_grad():
         logits = model(batch)
         probs = F.softmax(logits, dim=1)[:, REAL_IDX].cpu().numpy()
+        
+    if invert_flag:
+        probs = 1.0 - probs
 
     del batch, tensors
     gc.collect()
@@ -200,7 +205,7 @@ if uploaded_file:
             st.subheader("Image Analysis Platform")
             if st.button("🔍 Submit Image for Scan"):
                 with st.spinner("Processing enhanced face crop with margin boundary padding..."):
-                    probs, crops = extract_and_predict_enhanced([img])
+                    probs, crops = extract_and_predict_enhanced([img], invert_preds)
 
                 if probs is not None and len(probs) > 0:
                     real_prob = probs[0]
@@ -252,7 +257,7 @@ if uploaded_file:
 
                     cap.release()
 
-                    probs, crops = extract_and_predict_enhanced(pil_frames)
+                    probs, crops = extract_and_predict_enhanced(pil_frames, invert_preds)
 
                 if probs is not None and len(probs) > 0:
                     avg_real_prob = np.mean(probs)
