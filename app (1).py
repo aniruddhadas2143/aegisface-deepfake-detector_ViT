@@ -72,6 +72,8 @@ def init_detector():
     model.heads.head = nn.Linear(model.heads.head.in_features, 2)
     
     real_idx = 1
+    class_mapping = {"fake": 0, "real": 1}
+    
     weights_path = "weights/model_complete.pth"
     if not os.path.exists(weights_path):
         weights_path = "weights/vit_deepfake.pth"
@@ -80,15 +82,21 @@ def init_detector():
         checkpoint = torch.load(weights_path, map_location=device)
         if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
             model.load_state_dict(checkpoint["state_dict"])
-            class_mapping = checkpoint.get("class_to_idx", {"fake": 0, "real": 1})
-            real_idx = class_mapping.get("real", class_mapping.get("Real", 1))
+            if "class_to_idx" in checkpoint:
+                class_mapping = checkpoint["class_to_idx"]
         else:
             model.load_state_dict(checkpoint)
 
-    model.to(device).eval()
-    return mtcnn, model, real_idx
+    # Automatically resolve indices from mapping keys
+    for k, v in class_mapping.items():
+        if k.lower() in ["real", "authentic"]:
+            real_idx = int(v)
+            break
 
-mtcnn, model, REAL_IDX = init_detector()
+    model.to(device).eval()
+    return mtcnn, model, real_idx, class_mapping
+
+mtcnn, model, REAL_IDX, CLASS_MAP = init_detector()
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -130,8 +138,8 @@ with st.sidebar:
     st.caption(f"Operator: {st.session_state.username}")
     st.markdown("---")
     st.text(f"Device: {device.type.upper()}")
-    st.text("Model: ViT-B/16 Engine")
-    st.text(f"Target Real Index: Class {REAL_IDX}")
+    st.text(f"Class Map: {CLASS_MAP}")
+    st.text(f"Resolved Real Index: {REAL_IDX}")
     st.markdown("---")
     if st.button("Logout"):
         st.session_state.authenticated = False
