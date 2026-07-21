@@ -8,18 +8,20 @@ Original file is located at
 """
 
 
-import streamlit as st
-import torch
-import torch.nn as nn
-import cv2
+import gc
 import os
 import json
 import hashlib
 import tempfile
 import numpy as np
 from PIL import Image
-from torchvision import models, transforms, datasets
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import models, transforms
 from facenet_pytorch import MTCNN
+import cv2
+import streamlit as st
 
 st.set_page_config(
     page_title="AegisFace - Deepfake Forensics Studio",
@@ -61,14 +63,14 @@ if "authenticated" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = ""
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu')
 
-@st.cache_resource
+@st.cache_resource(max_entries=1)
 def init_detector():
     mtcnn = MTCNN(keep_all=False, post_process=False, select_largest=True, device=device)
     model = models.vit_b_16()
     model.heads.head = nn.Linear(model.heads.head.in_features, 2)
-
+    
     real_idx = 1
     weights_path = "weights/model_complete.pth"
     if not os.path.exists(weights_path):
@@ -137,11 +139,11 @@ with st.sidebar:
         st.rerun()
 
 st.title("Video & Image Deepfake Forensics")
-st.markdown("Upload a video (`.mp4`) or image (`.jpg`, `.png`) to perform facial spatial verification.")
+st.markdown("Upload a video (`.mp4`) or image (`.jpg`, `.png`) to perform enhanced spatial verification.")
 
 uploaded_file = st.file_uploader("Drop Media File", type=["jpg", "png", "jpeg", "mp4"])
 
-def extract_and_predict(pil_images):
+def extract_and_predict_enhanced(pil_images):
     tensors = []
     crops = []
 
@@ -150,8 +152,16 @@ def extract_and_predict(pil_images):
         if boxes is not None and len(boxes) > 0:
             box = boxes[0].astype(int)
             w, h = img.size
-            x1, y1 = max(0, box[0]), max(0, box[1])
-            x2, y2 = min(w, box[2]), min(h, box[3])
+            
+            box_w = box[2] - box[0]
+            box_h = box[3] - box[1]
+            pad_w = int(box_w * 0.2)
+            pad_h = int(box_h * 0.2)
+            
+            x1 = max(0, box[0] - pad_w)
+            y1 = max(0, box[1] - pad_h)
+            x2 = min(w, box[2] + pad_w)
+            y2 = min(h, box[3] + pad_h)
 
             if x2 > x1 and y2 > y1:
                 crop = img.crop((x1, y1, x2, y2))
@@ -163,13 +173,11 @@ def extract_and_predict(pil_images):
 
     batch = torch.stack(tensors).to(device)
     with torch.no_grad():
-        if device.type == 'cuda':
-            with torch.cuda.amp.autocast():
-                logits = model(batch)
-        else:
-            logits = model(batch)
+        logits = model(batch)
+        probs = F.softmax(logits, dim=1)[:, REAL_IDX].cpu().numpy()
 
-        probs = torch.nn.functional.softmax(logits, dim=1)[:, REAL_IDX].cpu().numpy()
+    del batch, tensors
+    gc.collect()
 
     return probs, crops
 
@@ -183,15 +191,15 @@ if uploaded_file:
         with col2:
             st.subheader("Image Analysis Platform")
             if st.button("🔍 Submit Image for Scan"):
-                with st.spinner("Processing face crop..."):
-                    probs, crops = extract_and_predict([img])
+                with st.spinner("Processing enhanced face crop with margin boundary padding..."):
+                    probs, crops = extract_and_predict_enhanced([img])
 
                 if probs is not None and len(probs) > 0:
                     real_prob = probs[0]
                     is_real = real_prob > 0.5
                     conf = real_prob if is_real else (1 - real_prob)
 
-                    st.image(crops[0], caption="Extracted Face Box", width=180)
+                    st.image(crops[0], caption="Padded Face Box Region", width=180)
 
                     m1, m2 = st.columns(2)
                     m1.metric("Assessment", "REAL" if is_real else "DEEPFAKE")
@@ -215,10 +223,10 @@ if uploaded_file:
         with col2:
             st.subheader("Video Analysis Platform")
             if st.button("🚀 Submit Video for Scan"):
-                with st.spinner("Decoding video frames with OpenCV..."):
+                with st.spinner("Decoding video frames and analyzing consistency..."):
                     cap = cv2.VideoCapture(vid_path)
                     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    sample_count = 24
+                    sample_count = 12
                     step = max(1, total_frames // sample_count)
 
                     pil_frames = []
@@ -236,14 +244,14 @@ if uploaded_file:
 
                     cap.release()
 
-                    probs, crops = extract_and_predict(pil_frames)
+                    probs, crops = extract_and_predict_enhanced(pil_frames)
 
                 if probs is not None and len(probs) > 0:
                     avg_real_prob = np.mean(probs)
                     is_real = avg_real_prob > 0.5
                     conf = avg_real_prob if is_real else (1 - avg_real_prob)
 
-                    st.markdown("**Sampled Facial Crops:**")
+                    st.markdown("**Padded Facial Crops Sampled:**")
                     st.image(crops[:6], width=80)
 
                     m1, m2 = st.columns(2)
@@ -259,4 +267,3 @@ if uploaded_file:
 
                 if os.path.exists(vid_path):
                     os.remove(vid_path)
-
